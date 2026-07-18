@@ -1,0 +1,97 @@
+= Gradle Dependency Bundle
+
+== Purpose
+
+The plugin produces two related outputs:
+
+* a Maven-local-compatible repository containing JARs, POMs, Gradle `.module` metadata, source JARs, plugin markers, and checksums;
+* a graph manifest that explains why each component was selected and maps it to the concrete files that a restricted repository must serve.
+
+The graph is not a flat coordinate list. It records configuration roots, dependency edges, requested selectors, constraints, selection reasons, selected variants, and their Gradle attributes. The auditor renders that structure in a form similar to Gradle's `dependencies` report and adds an availability status for every file.
+
+== Apply and configure
+
+[source,kotlin]
+----
+plugins {
+    id("org.openprojectx.gradle.dependency.bundle") version "0.1.0-SNAPSHOT"
+}
+
+dependencyBundle {
+    configurations.addAll("runtimeClasspath", "testRuntimeClasspath")
+    includeBuildDependencies.set(true)
+    includeSources.set(true)
+
+    // Resolve an otherwise unreferenced module.
+    module("com.example:extra-library:1.2.3")
+
+    // Capture the KGP variant selected for each target Gradle API.
+    gradleApiVariants(
+        "org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21",
+        listOf("8.8", "8.11", "8.13"),
+    )
+}
+----
+
+`includeBuildDependencies` includes resolvable buildscript classpaths. Dependencies used before the project plugin can run, such as settings plugins, `buildSrc`, precompiled Kotlin DSL plugins, and the dependency-bundle plugin itself, require a bootstrap pass. This repository demonstrates that pass in `gradle/dependency-bundle.init.gradle`: first publish the plugin locally, then start the target build with an isolated Gradle home and apply the implementation class from the init-script classpath. The isolated cache is copied into the same Maven layout, so bootstrap-only artifacts are included too.
+
+== Independent builds
+
+The `example` directory is deliberately excluded from the root build. It resolves both Kotlin and this plugin from the repository published by the root build. `prepareDependencyBundle` runs the root bootstrap pass and the independent example pass with one isolated Gradle home, then merges both graphs.
+
+[source,shell]
+----
+./gradlew clean verifyPreparedDependencyBundle
+----
+
+To prove repository completeness, use a Gradle home containing only the wrapper distribution and run the example offline:
+
+[source,shell]
+----
+mkdir -p build/offline-gradle-home
+cp -R build/dependency-bundle-gradle-home/wrapper build/offline-gradle-home/
+./gradlew -g build/offline-gradle-home -p example \
+  -PbundleRepository="$PWD/build/dependency-bundle/m2/repository" \
+  -PbundleOfflineOnly --offline clean run
+----
+
+== Restricted JFrog analysis
+
+Run the Gradle task in the restricted environment:
+
+[source,shell]
+----
+JFROG_USERNAME=user JFROG_PASSWORD=secret \
+./gradlew auditArtifactRepository \
+  -PartifactRepositoryUrl=https://jfrog.example/artifactory/maven
+----
+
+The JSON report is machine-readable. The text report preserves the configuration graph, so a missing classifier JAR or `.module` file can be traced back to the dependency path and selected variant that requires it.
+
+== Container image
+
+Jib is used because the image needs a runnable JVM auditor as well as data layers. It produces reproducible OCI images without requiring a Docker daemon and gives stable paths and metadata. A plain Dockerfile would duplicate application classpath assembly; a repository-only archive would not provide the auditor. Jib's tar and Docker-daemon targets still allow conventional inspection and copying.
+
+[source,shell]
+----
+./gradlew :auditor-cli:jibDockerBuild
+docker run --rm \
+  -e JFROG_URL=https://jfrog.example/artifactory/maven \
+  -e JFROG_USERNAME=user -e JFROG_PASSWORD=secret \
+  ghcr.io/openprojectx/gradle-dependency-bundle:0.1.0-SNAPSHOT
+
+# Copy the portable Maven repository without running the auditor.
+id=$(docker create ghcr.io/openprojectx/gradle-dependency-bundle:0.1.0-SNAPSHOT)
+docker cp "$id:/m2/repository" ./repository
+docker rm "$id"
+----
+
+In a restricted Gradle build, put the copied repository first and remove public fallbacks:
+
+[source,kotlin]
+----
+pluginManagement { repositories { mavenLocal() } }
+dependencyResolutionManagement { repositories { mavenLocal() } }
+----
+
+Set `maven.repo.local` to the copied directory when it is not the default `~/.m2/repository`.

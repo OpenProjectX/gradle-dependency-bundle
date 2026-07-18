@@ -1,0 +1,34 @@
+initscript {
+    repositories {
+        maven { url = uri(System.getProperty("bundleRepository")) }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath "org.openprojectx.gradle.dependency.bundle:plugin:${System.getProperty("bundlePluginVersion")}"
+    }
+}
+
+gradle.beforeProject { project ->
+    def targetRoot = new File(System.getProperty("bundleProjectDir")).canonicalFile
+    if (project == project.rootProject && project.rootDir.canonicalFile == targetRoot) {
+        // Detached supplemental configurations use project repositories rather
+        // than pluginManagement repositories. Kotlin DSL implementation artifacts
+        // are published only by the Gradle Plugin Portal.
+        project.repositories.maven { url = uri("https://plugins.gradle.org/m2") }
+        // An init-script classpath is not part of Gradle's plugin-id lookup scope.
+        // Apply the implementation class that was loaded by the init script instead.
+        project.pluginManager.apply(org.openprojectx.gradle.dependency.bundle.DependencyBundlePlugin)
+        project.extensions.getByName("dependencyBundle").with {
+            outputDirectory.set(project.file(System.getProperty("bundleOutput")))
+            includeBuildDependencies.set(true)
+            includeSources.set(true)
+            configurations.addAll("runtimeClasspath", "testRuntimeClasspath")
+            module("org.gradle.kotlin:gradle-kotlin-dsl-plugins:6.5.2")
+            gradleApiVariants(
+                "org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21",
+                ["8.0", "8.1", "8.2", "8.5", "8.6", "8.8", "8.11", "8.13"],
+            )
+        }
+    }
+}

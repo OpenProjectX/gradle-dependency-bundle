@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests and complete bundle
+        run: ./gradlew --no-daemon --no-configuration-cache clean test verifyPreparedDependencyBundle :auditor-cli:jibDockerBuild
+
+      - name: Verify important artifact classes
+        run: |
+          repo="$PWD/build/dependency-bundle/m2/repository"
+          test -n "$(find "$repo" -name 'kotlin-gradle-plugin-*.jar' -print -quit)"
+          test -n "$(find "$repo" -name 'gradle-kotlin-dsl-plugins-*.jar' -print -quit)"
+          test -n "$(find "$repo" -name 'kotlinpoet-jvm-*.jar' -print -quit)"
+          test -n "$(find "$repo" -name '*-sources.jar' -print -quit)"
+          test -n "$(find "$repo" -name '*.module' -print -quit)"
+
+      - name: Run independent example using only the bundle
+        run: |
+          mkdir -p build/offline-gradle-home
+          cp -R build/dependency-bundle-gradle-home/wrapper build/offline-gradle-home/
+          ./gradlew --no-daemon -g build/offline-gradle-home -p example \
+            -PbundleRepository="$PWD/build/dependency-bundle/m2/repository" \
+            -PbundleOfflineOnly --offline clean run
+
+      - name: Build and inspect OCI image
+        run: |
+          image="ghcr.io/openprojectx/gradle-dependency-bundle:0.1.0-SNAPSHOT"
+          container=$(docker create "$image")
+          docker cp "$container:/m2/repository" build/image-repository
+          docker cp "$container:/dependency-bundle/dependency-graph.json" build/image-dependency-graph.json
+          docker rm "$container"
+          test -n "$(find build/image-repository -name '*.jar' -print -quit)"
