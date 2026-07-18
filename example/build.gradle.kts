@@ -1,6 +1,6 @@
 plugins {
     kotlin("jvm") version "2.2.21"
-    id("org.openprojectx.gradle.dependency.bundle") version "0.1.0-SNAPSHOT"
+    id("org.openprojectx.gradle.dependency.bundle")
     application
 }
 

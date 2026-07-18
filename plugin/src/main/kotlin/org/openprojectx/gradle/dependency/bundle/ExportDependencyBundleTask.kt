@@ -72,6 +72,7 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
         copyGradleCache(repository)
         materializeDeclaredArtifacts(repository)
         materializeConventionalSources(repository)
+        materializeCanonicalSnapshotAliases(repository)
 
         discoverRepositoryComponents(repository)
         val artifacts = inventory(repository)
@@ -286,6 +287,52 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
         } ?: return false
         Files.copy(candidate, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES)
         return true
+    }
+
+    /**
+     * Gradle's cache retains the timestamped form of unique Maven snapshots. A
+     * Maven-local repository has no remote metadata lookup, so consumers also
+     * need canonical `-SNAPSHOT` names. Materialize every artifact and sidecar,
+     * including POM-only plugin markers and Gradle module metadata.
+     */
+    private fun materializeCanonicalSnapshotAliases(repository: Path) {
+        val snapshotDirectories = Files.walk(repository).use { paths ->
+            paths.filter { directory ->
+                Files.isDirectory(directory) &&
+                    repository.relativize(directory).nameCount >= 3 &&
+                    directory.fileName.toString().endsWith("-SNAPSHOT")
+            }.toList()
+        }
+
+        snapshotDirectories.forEach { directory ->
+            val version = directory.fileName.toString()
+            val module = directory.parent.fileName.toString()
+            val baseVersion = version.removeSuffix("-SNAPSHOT")
+            val uniquePattern = Regex(
+                "^${Regex.escape("$module-$baseVersion-")}\\d{8}\\.\\d{6}-\\d+(.*)$"
+            )
+            val latestBySuffix = Files.list(directory).use { files ->
+                files.filter(Files::isRegularFile)
+                    .map { file -> file to uniquePattern.matchEntire(file.fileName.toString()) }
+                    .filter { (_, match) -> match != null }
+                    .map { (file, match) -> match!!.groupValues[1] to file }
+                    .toList()
+                    .groupBy({ it.first }, { it.second })
+                    .mapValues { (_, candidates) -> candidates.maxBy { it.fileName.toString() } }
+            }
+
+            latestBySuffix.forEach { (suffix, source) ->
+                val destination = directory.resolve("$module-$version$suffix")
+                if (!Files.exists(destination) || Files.mismatch(source, destination) != -1L) {
+                    Files.copy(
+                        source,
+                        destination,
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.COPY_ATTRIBUTES,
+                    )
+                }
+            }
+        }
     }
 
     /**

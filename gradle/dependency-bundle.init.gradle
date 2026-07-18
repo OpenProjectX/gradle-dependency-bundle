@@ -24,6 +24,9 @@ gradle.beforeProject { project ->
             includeBuildDependencies.set(true)
             includeSources.set(true)
             configurations.addAll("runtimeClasspath", "testRuntimeClasspath")
+            // The independent example runs offline before its own graph is
+            // captured, so seed its complete runtime graph in the root bundle.
+            module("com.squareup:kotlinpoet:2.3.0")
             module("org.gradle.kotlin:gradle-kotlin-dsl-plugins:6.5.2")
             gradleApiVariants(
                 "org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21",

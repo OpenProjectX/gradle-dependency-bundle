@@ -163,6 +163,7 @@ val bundleRepository = bundleDirectory.map { it.dir("m2/repository") }
 // Gradle may clean task outputs before execution, which would otherwise remove
 // the running wrapper distribution and daemon registry from underneath itself.
 val bundleGradleHome = layout.buildDirectory.dir("dependency-bundle-gradle-home")
+val exampleGradleHome = layout.buildDirectory.dir("dependency-bundle-example-gradle-home")
 
 val publishBundleArtifacts by tasks.registering {
     group = "dependency bundle"
@@ -197,15 +198,25 @@ val captureRootDependencyBundle by tasks.registering(Exec::class) {
     environment("GRADLE_USER_HOME", gradleHome)
 }
 
+val prepareExampleGradleHome by tasks.registering(Sync::class) {
+    group = "dependency bundle"
+    description = "Creates a clean Gradle home containing only the cached wrapper distribution."
+    dependsOn(captureRootDependencyBundle)
+    from(bundleGradleHome.map { it.dir("wrapper") })
+    into(exampleGradleHome.map { it.dir("wrapper") })
+}
+
 val buildExampleAgainstBundle by tasks.registering(Exec::class) {
     group = "dependency bundle"
-    dependsOn(captureRootDependencyBundle)
+    dependsOn(prepareExampleGradleHome)
     val repository = bundleRepository.get().asFile.absolutePath
-    val gradleHome = bundleGradleHome.get().asFile.absolutePath
+    val gradleHome = exampleGradleHome.get().asFile.absolutePath
     commandLine(
-        "./gradlew", "--no-daemon", "--no-configuration-cache",
+        "./gradlew", "--no-daemon", "--no-configuration-cache", "--offline",
         "-p", "example",
         "-PbundleRepository=$repository",
+        "-PbundlePluginVersion=${project.version}",
+        "-PbundleOfflineOnly",
         "-PbundleOutput=${bundleDirectory.get().asFile.absolutePath}",
         "build",
     )
@@ -222,6 +233,7 @@ val captureExampleDependencyBundle by tasks.registering(Exec::class) {
         "./gradlew", "--no-daemon", "--no-configuration-cache",
         "-p", "example",
         "-PbundleRepository=$repository",
+        "-PbundlePluginVersion=${project.version}",
         "-PbundleOutput=$output",
         "dependencyBundleReport",
     )
@@ -265,6 +277,20 @@ val verifyPreparedDependencyBundle by tasks.registering {
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
             check(actual == artifact.getValue("sha256")) { "Manifest checksum differs for $relative" }
         }
+        val version = project.version.toString()
+        val groupPath = "org/openprojectx/gradle/dependency/bundle"
+        val requiredLocalArtifacts = listOf(
+            "$groupPath/org.openprojectx.gradle.dependency.bundle.gradle.plugin/$version/" +
+                "org.openprojectx.gradle.dependency.bundle.gradle.plugin-$version.pom",
+            "$groupPath/plugin/$version/plugin-$version.pom",
+            "$groupPath/plugin/$version/plugin-$version.module",
+            "$groupPath/plugin/$version/plugin-$version.jar",
+        )
+        requiredLocalArtifacts.forEach { relative ->
+            check(repository.get().file(relative).asFile.isFile) {
+                "Canonical Maven-local artifact is absent: $relative"
+            }
+        }
         logger.lifecycle("Verified {} bundled artifacts", artifacts.size)
     }
 }
@@ -294,9 +320,11 @@ configure<ReleaseExtension> {
     buildTasks.set(
         listOf(
             "syncDocsVersion",
+            "test",
+            "verifyPreparedDependencyBundle",
+            ":auditor-cli:jib",
             "publishToSonatype",
             "closeAndReleaseSonatypeStagingRepository",
-            ":auditor-cli:jib",
         )
     )
     versionPropertyFile.set("gradle.properties")
@@ -305,4 +333,10 @@ configure<ReleaseExtension> {
     with(git) {
         requireBranch.set("master")
     }
+}
+
+// Publishing must never begin until the bundle and its isolated offline
+// consumer build have passed, including when publication is invoked directly.
+tasks.matching { it.name == "publishToSonatype" }.configureEach {
+    dependsOn(verifyPreparedDependencyBundle)
 }
