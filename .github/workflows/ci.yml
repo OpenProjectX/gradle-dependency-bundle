@@ -50,7 +50,8 @@ jobs:
 
       - name: Build and inspect OCI image
         run: |
-          image="ghcr.io/openprojectx/gradle-dependency-bundle:0.1.0-SNAPSHOT"
+          version=$(sed -n 's/^version[[:space:]]*=[[:space:]]*//p' gradle.properties)
+          image="ghcr.io/openprojectx/gradle-dependency-bundle:$version"
           container=$(docker create "$image")
           docker cp "$container:/m2/repository" build/image-repository
           docker cp "$container:/dependency-bundle/dependency-graph.json" build/image-dependency-graph.json
