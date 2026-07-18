@@ -16,7 +16,7 @@ import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import org.gradle.work.DisableCachingByDefault
 import org.openprojectx.gradle.dependency.bundle.core.ArtifactRecord
@@ -43,7 +43,11 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
     @get:Input abstract val gradleVariantRequests: ListProperty<String>
     @get:Input abstract val artifactRepositoryUrls: ListProperty<String>
     @get:Input abstract val pluginVersion: Property<String>
-    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+    // This task merges resolved artifacts into a repository that may already
+    // contain publications from the current build. Declaring the whole bundle
+    // as an output directory lets Gradle clean those publications immediately
+    // before execution (notably POM-only plugin markers on a fresh CI runner).
+    @get:Internal abstract val outputDirectory: DirectoryProperty
 
     private val components = linkedMapOf<String, ComponentNode>()
     private val edges = linkedSetOf<DependencyEdge>()
