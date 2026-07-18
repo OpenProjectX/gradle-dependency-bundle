@@ -26,11 +26,12 @@ jobs:
         run: |
           repo="$PWD/build/dependency-bundle/m2/repository"
           test -n "$(find "$repo" -name 'kotlin-gradle-plugin-*.jar' -print -quit)"
+          test -n "$(find "$repo/org/jetbrains/kotlin/jvm/org.jetbrains.kotlin.jvm.gradle.plugin" -name '*.pom' -print -quit)"
           test -n "$(find "$repo" -name 'gradle-kotlin-dsl-plugins-*.jar' -print -quit)"
           test -n "$(find "$repo" -name 'kotlinpoet-jvm-*.jar' -print -quit)"
           test -n "$(find "$repo" -name '*-sources.jar' -print -quit)"
           test -n "$(find "$repo" -name '*.module' -print -quit)"
-          version=$(sed -n 's/^version=//p' gradle.properties)
+          version=$(sed -n 's/^version[[:space:]]*=[[:space:]]*//p' gradle.properties)
           group="$repo/org/openprojectx/gradle/dependency/bundle"
           test -f "$group/org.openprojectx.gradle.dependency.bundle.gradle.plugin/$version/org.openprojectx.gradle.dependency.bundle.gradle.plugin-$version.pom"
           test -f "$group/plugin/$version/plugin-$version.pom"
@@ -41,7 +42,7 @@ jobs:
         run: |
           mkdir -p build/offline-gradle-home
           cp -R build/dependency-bundle-gradle-home/wrapper build/offline-gradle-home/
-          version=$(sed -n 's/^version=//p' gradle.properties)
+          version=$(sed -n 's/^version[[:space:]]*=[[:space:]]*//p' gradle.properties)
           ./gradlew --no-daemon -g build/offline-gradle-home -p example \
             -PbundleRepository="$PWD/build/dependency-bundle/m2/repository" \
             -PbundlePluginVersion="$version" \

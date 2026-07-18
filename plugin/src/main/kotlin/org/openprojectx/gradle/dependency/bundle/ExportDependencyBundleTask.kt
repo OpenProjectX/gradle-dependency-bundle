@@ -309,16 +309,25 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
             val module = directory.parent.fileName.toString()
             val baseVersion = version.removeSuffix("-SNAPSHOT")
             val uniquePattern = Regex(
-                "^${Regex.escape("$module-$baseVersion-")}\\d{8}\\.\\d{6}-\\d+(.*)$"
+                "^${Regex.escape("$module-$baseVersion-")}(\\d{8}\\.\\d{6})-(\\d+)(.*)$"
             )
             val latestBySuffix = Files.list(directory).use { files ->
                 files.filter(Files::isRegularFile)
                     .map { file -> file to uniquePattern.matchEntire(file.fileName.toString()) }
                     .filter { (_, match) -> match != null }
-                    .map { (file, match) -> match!!.groupValues[1] to file }
+                    .map { (file, match) ->
+                        SnapshotFile(
+                            path = file,
+                            timestamp = match!!.groupValues[1],
+                            buildNumber = match.groupValues[2].toInt(),
+                            suffix = match.groupValues[3],
+                        )
+                    }
                     .toList()
-                    .groupBy({ it.first }, { it.second })
-                    .mapValues { (_, candidates) -> candidates.maxBy { it.fileName.toString() } }
+                    .groupBy { it.suffix }
+                    .mapValues { (_, candidates) ->
+                        candidates.maxWith(compareBy<SnapshotFile>({ it.timestamp }, { it.buildNumber })).path
+                    }
             }
 
             latestBySuffix.forEach { (suffix, source) ->
@@ -334,6 +343,13 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
             }
         }
     }
+
+    private data class SnapshotFile(
+        val path: Path,
+        val timestamp: String,
+        val buildNumber: Int,
+        val suffix: String,
+    )
 
     /**
      * Maven POM-only modules do not describe source artifacts. Try the conventional

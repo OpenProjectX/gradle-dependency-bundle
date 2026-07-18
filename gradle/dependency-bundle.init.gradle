@@ -27,6 +27,10 @@ gradle.beforeProject { project ->
             // The independent example runs offline before its own graph is
             // captured, so seed its complete runtime graph in the root bundle.
             module("com.squareup:kotlinpoet:2.3.0")
+            module("org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin:2.2.21")
+            // KGP resolves this lazily when the first Kotlin compile task runs;
+            // it is not present on the plugin classpath itself.
+            module("org.jetbrains.kotlin:kotlin-build-tools-impl:2.2.21")
             module("org.gradle.kotlin:gradle-kotlin-dsl-plugins:6.5.2")
             gradleApiVariants(
                 "org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21",

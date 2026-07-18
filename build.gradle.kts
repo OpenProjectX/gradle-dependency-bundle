@@ -202,8 +202,10 @@ val prepareExampleGradleHome by tasks.registering(Sync::class) {
     group = "dependency bundle"
     description = "Creates a clean Gradle home containing only the cached wrapper distribution."
     dependsOn(captureRootDependencyBundle)
-    from(bundleGradleHome.map { it.dir("wrapper") })
-    into(exampleGradleHome.map { it.dir("wrapper") })
+    from(bundleGradleHome.map { it.dir("wrapper") }) {
+        into("wrapper")
+    }
+    into(exampleGradleHome)
 }
 
 val buildExampleAgainstBundle by tasks.registering(Exec::class) {
