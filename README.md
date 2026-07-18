@@ -4,7 +4,7 @@ Build a portable Maven-layout repository and a dependency graph from a Gradle bu
 
 ```kotlin
 plugins {
-    id("org.openprojectx.gradle.dependency.bundle") version "0.1.0-SNAPSHOT"
+    id("org.openprojectx.gradle.dependency.bundle") version "0.1.1"
 }
 
 dependencyBundle {
