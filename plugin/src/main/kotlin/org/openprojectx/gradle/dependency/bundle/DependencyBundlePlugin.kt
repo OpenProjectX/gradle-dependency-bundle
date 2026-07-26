@@ -5,7 +5,6 @@ import org.gradle.api.Project
 
 class DependencyBundlePlugin : Plugin<Project> {
     override fun apply(project: Project) {
-        require(project == project.rootProject) { "Dependency bundle plugin must be applied to the root project" }
         val extension = project.extensions.create("dependencyBundle", DependencyBundleExtension::class.java)
         extension.outputDirectory.convention(project.layout.buildDirectory.dir("dependency-bundle"))
 

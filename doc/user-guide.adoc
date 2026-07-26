@@ -33,7 +33,11 @@ dependencyBundle {
 }
 ----
 
-`includeBuildDependencies` includes resolvable buildscript classpaths. Dependencies used before the project plugin can run, such as settings plugins, `buildSrc`, precompiled Kotlin DSL plugins, and the dependency-bundle plugin itself, require a bootstrap pass. This repository demonstrates that pass in `gradle/dependency-bundle.init.gradle`: first publish the plugin locally, then start the target build with an isolated Gradle home and apply the implementation class from the init-script classpath. The isolated cache is copied into the same Maven layout, so bootstrap-only artifacts are included too.
+When applied to the root project, the plugin aggregates the requested resolvable configurations from all projects. When applied to a subproject, it captures only that project and registers project-scoped tasks, for example `:app:exportDependencyBundle` and `:app:dependencyBundleReport`. Its default output is correspondingly `app/build/dependency-bundle`.
+
+The exporter copies only Gradle module-cache coordinates selected in the captured graphs. It does not copy unrelated modules left in a shared Gradle user home by other builds. Bundle outputs support multiple capture passes and are therefore merged rather than erased; remove an output produced by plugin `0.1.1` or older once before regenerating it with graph-scoped cache copying.
+
+`includeBuildDependencies` includes resolvable buildscript classpaths. Dependencies used before the project plugin can run, such as settings plugins, `buildSrc`, precompiled Kotlin DSL plugins, and the dependency-bundle plugin itself, require a bootstrap pass. This repository demonstrates that pass in `gradle/dependency-bundle.init.gradle`: first publish the plugin locally, then start the target build with an isolated Gradle home and apply the implementation class from the init-script classpath. The bootstrap pass captures resolvable buildscript graphs and declares pre-project modules and Gradle variants explicitly, so their selected cache coordinates are copied into the same Maven layout.
 
 == Independent builds
 

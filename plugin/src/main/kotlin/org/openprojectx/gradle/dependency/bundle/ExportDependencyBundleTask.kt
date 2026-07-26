@@ -102,7 +102,12 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
         val requested = configurationNames.get().toSet()
         val buildName = project.rootProject.name
         val result = mutableListOf<Pair<String, Configuration>>()
-        project.rootProject.allprojects.forEach { target ->
+        val targetProjects = if (project == project.rootProject) {
+            project.rootProject.allprojects
+        } else {
+            setOf(project)
+        }
+        targetProjects.forEach { target ->
             target.configurations
                 .filter { it.isCanBeResolved && it.name in requested }
                 .forEach { result += "$buildName${target.path}:${it.name}" to it }
@@ -191,23 +196,32 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
     private fun copyGradleCache(repository: Path) {
         val cache = project.gradle.gradleUserHomeDir.toPath().resolve("caches/modules-2/files-2.1")
         if (!Files.isDirectory(cache)) throw GradleException("Gradle module cache not found: $cache")
-        Files.walk(cache).use { paths ->
-            paths.filter(Files::isRegularFile).forEach { source ->
-                val relative = cache.relativize(source)
-                if (relative.nameCount < 5) return@forEach
-                val group = relative.getName(0).toString().replace('.', '/')
-                val destination = repository.resolve(group)
-                    .resolve(relative.getName(1).toString())
-                    .resolve(relative.getName(2).toString())
-                    .resolve(source.fileName.toString())
-                Files.createDirectories(destination.parent)
-                if (!Files.exists(destination)) {
-                    Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES)
-                } else if (Files.mismatch(source, destination) != -1L) {
-                    logger.warn("Ignoring a conflicting cached copy of {}", destination)
+        components.values
+            .asSequence()
+            .filter { it.group != null && it.module != null && it.version != null }
+            .distinctBy { Triple(it.group, it.module, it.version) }
+            .forEach { component ->
+                val coordinateCache = cache
+                    .resolve(component.group!!)
+                    .resolve(component.module!!)
+                    .resolve(component.version!!)
+                if (!Files.isDirectory(coordinateCache)) return@forEach
+                Files.walk(coordinateCache).use { paths ->
+                    paths.filter(Files::isRegularFile).forEach { source ->
+                        val destination = repository
+                            .resolve(component.group!!.replace('.', '/'))
+                            .resolve(component.module!!)
+                            .resolve(component.version!!)
+                            .resolve(source.fileName.toString())
+                        Files.createDirectories(destination.parent)
+                        if (!Files.exists(destination)) {
+                            Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES)
+                        } else if (Files.mismatch(source, destination) != -1L) {
+                            logger.warn("Ignoring a conflicting cached copy of {}", destination)
+                        }
+                    }
                 }
             }
-        }
     }
 
     private fun materializeDeclaredArtifacts(repository: Path) {
