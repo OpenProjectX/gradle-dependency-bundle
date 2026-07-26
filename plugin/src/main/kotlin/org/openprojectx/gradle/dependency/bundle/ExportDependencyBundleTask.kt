@@ -33,6 +33,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Element
+import org.w3c.dom.Node
 
 @DisableCachingByDefault(because = "Resolves external graphs and materializes a portable repository")
 abstract class ExportDependencyBundleTask : DefaultTask() {
@@ -196,33 +199,150 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
     private fun copyGradleCache(repository: Path) {
         val cache = project.gradle.gradleUserHomeDir.toPath().resolve("caches/modules-2/files-2.1")
         if (!Files.isDirectory(cache)) throw GradleException("Gradle module cache not found: $cache")
-        components.values
-            .asSequence()
-            .filter { it.group != null && it.module != null && it.version != null }
-            .distinctBy { Triple(it.group, it.module, it.version) }
-            .forEach { component ->
-                val coordinateCache = cache
-                    .resolve(component.group!!)
-                    .resolve(component.module!!)
-                    .resolve(component.version!!)
-                if (!Files.isDirectory(coordinateCache)) return@forEach
-                Files.walk(coordinateCache).use { paths ->
-                    paths.filter(Files::isRegularFile).forEach { source ->
-                        val destination = repository
-                            .resolve(component.group!!.replace('.', '/'))
-                            .resolve(component.module!!)
-                            .resolve(component.version!!)
-                            .resolve(source.fileName.toString())
-                        Files.createDirectories(destination.parent)
-                        if (!Files.exists(destination)) {
-                            Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES)
-                        } else if (Files.mismatch(source, destination) != -1L) {
-                            logger.warn("Ignoring a conflicting cached copy of {}", destination)
-                        }
-                    }
+        val pending = ArrayDeque(
+            components.values
+                .asSequence()
+                .filter { it.group != null && it.module != null && it.version != null }
+                .map { ModuleCoordinate(it.group!!, it.module!!, it.version!!) }
+                .distinct()
+                .toList(),
+        )
+        val copied = mutableSetOf<ModuleCoordinate>()
+
+        while (pending.isNotEmpty()) {
+            val coordinate = pending.removeFirst()
+            if (!copied.add(coordinate)) continue
+            copyCoordinateCache(cache, repository, coordinate).forEach { dependency ->
+                if (dependency !in copied) pending.addLast(dependency)
+            }
+        }
+    }
+
+    private fun copyCoordinateCache(
+        cache: Path,
+        repository: Path,
+        coordinate: ModuleCoordinate,
+    ): Set<ModuleCoordinate> {
+        val coordinateCache = cache
+            .resolve(coordinate.group)
+            .resolve(coordinate.module)
+            .resolve(coordinate.version)
+        if (!Files.isDirectory(coordinateCache)) return emptySet()
+
+        val metadataDependencies = mutableSetOf<ModuleCoordinate>()
+        Files.walk(coordinateCache).use { paths ->
+            paths.filter(Files::isRegularFile).forEach { source ->
+                val destination = repository
+                    .resolve(coordinate.group.replace('.', '/'))
+                    .resolve(coordinate.module)
+                    .resolve(coordinate.version)
+                    .resolve(source.fileName.toString())
+                Files.createDirectories(destination.parent)
+                if (!Files.exists(destination)) {
+                    Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES)
+                } else if (Files.mismatch(source, destination) != -1L) {
+                    logger.warn("Ignoring a conflicting cached copy of {}", destination)
+                }
+                if (source.fileName.toString().endsWith(".pom")) {
+                    metadataDependencies += referencedPomCoordinates(source)
                 }
             }
+        }
+        return metadataDependencies
     }
+
+    /**
+     * Parent POMs and imported BOMs participate in Maven model construction but
+     * are not necessarily Gradle resolution-result components. Preserve their
+     * recursive metadata closure without copying unrelated cache coordinates.
+     */
+    private fun referencedPomCoordinates(pom: Path): Set<ModuleCoordinate> {
+        return try {
+            val factory = DocumentBuilderFactory.newInstance()
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            factory.isXIncludeAware = false
+            factory.isExpandEntityReferences = false
+            val root = Files.newInputStream(pom).use { factory.newDocumentBuilder().parse(it).documentElement }
+            val parent = root.directChild("parent")
+            val rawProperties = root.directChild("properties")
+                ?.directChildren()
+                ?.associate { it.elementName() to it.textContent.trim() }
+                .orEmpty()
+                .toMutableMap()
+
+            val parentGroup = parent?.directText("groupId")
+            val parentVersion = parent?.directText("version")
+            val projectGroup = root.directText("groupId") ?: parentGroup
+            val projectVersion = root.directText("version") ?: parentVersion
+            projectGroup?.let {
+                rawProperties.putIfAbsent("project.groupId", it)
+                rawProperties.putIfAbsent("pom.groupId", it)
+            }
+            projectVersion?.let {
+                rawProperties.putIfAbsent("project.version", it)
+                rawProperties.putIfAbsent("pom.version", it)
+            }
+
+            fun coordinate(element: Element): ModuleCoordinate? {
+                val group = resolvePomValue(element.directText("groupId"), rawProperties) ?: return null
+                val module = resolvePomValue(element.directText("artifactId"), rawProperties) ?: return null
+                val version = resolvePomValue(element.directText("version"), rawProperties) ?: return null
+                return ModuleCoordinate(group, module, version)
+            }
+
+            buildSet {
+                parent?.let { coordinate(it)?.let(::add) }
+                root.directChild("dependencyManagement")
+                    ?.directChild("dependencies")
+                    ?.directChildren("dependency")
+                    ?.filter {
+                        resolvePomValue(it.directText("type"), rawProperties) == "pom" &&
+                            resolvePomValue(it.directText("scope"), rawProperties) == "import"
+                    }
+                    ?.forEach { coordinate(it)?.let(::add) }
+            }
+        } catch (exception: Exception) {
+            logger.info("Cannot inspect Maven metadata references in {}: {}", pom, exception.message)
+            emptySet()
+        }
+    }
+
+    private fun resolvePomValue(value: String?, properties: Map<String, String>): String? {
+        if (value == null) return null
+        var resolved = value.trim()
+        val placeholder = Regex("""\$\{([^}]+)}""")
+        repeat(10) {
+            val updated = placeholder.replace(resolved) { match ->
+                properties[match.groupValues[1]] ?: match.value
+            }
+            if (updated == resolved) return if (placeholder.containsMatchIn(resolved)) null else resolved
+            resolved = updated
+        }
+        return if (placeholder.containsMatchIn(resolved)) null else resolved
+    }
+
+    private fun Element.directChild(name: String): Element? =
+        directChildren(name).firstOrNull()
+
+    private fun Element.directChildren(name: String? = null): List<Element> =
+        (0 until childNodes.length)
+            .map { childNodes.item(it) }
+            .filter { it.nodeType == Node.ELEMENT_NODE }
+            .map { it as Element }
+            .filter { name == null || it.elementName() == name }
+
+    private fun Element.directText(name: String): String? =
+        directChild(name)?.textContent?.trim()?.takeIf(String::isNotEmpty)
+
+    private fun Element.elementName(): String = localName ?: tagName.substringAfter(':')
+
+    private data class ModuleCoordinate(
+        val group: String,
+        val module: String,
+        val version: String,
+    )
 
     private fun materializeDeclaredArtifacts(repository: Path) {
         val modules = Files.walk(repository).use { paths ->

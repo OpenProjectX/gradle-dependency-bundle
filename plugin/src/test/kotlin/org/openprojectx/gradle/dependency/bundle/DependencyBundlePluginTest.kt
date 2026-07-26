@@ -42,6 +42,35 @@ class DependencyBundlePluginTest {
         val repository = directory.resolve("repository")
         publishEmptyJar(repository, "test", "kept", "1")
         publishEmptyJar(repository, "test", "other", "1")
+        val parentPom = repository.resolve("test/parent/1/parent-1.pom")
+        Files.createDirectories(parentPom.parent)
+        Files.writeString(
+            parentPom,
+            """
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>test</groupId>
+              <artifactId>parent</artifactId>
+              <version>1</version>
+              <packaging>pom</packaging>
+            </project>
+            """.trimIndent(),
+        )
+        val keptPom = repository.resolve("test/kept/1/kept-1.pom")
+        Files.writeString(
+            keptPom,
+            """
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <parent>
+                <groupId>test</groupId>
+                <artifactId>parent</artifactId>
+                <version>1</version>
+              </parent>
+              <artifactId>kept</artifactId>
+            </project>
+            """.trimIndent(),
+        )
 
         Files.writeString(
             directory.resolve("settings.gradle"),
@@ -105,6 +134,10 @@ class DependencyBundlePluginTest {
         val selected = moduleCache.resolve("test/kept/1/content-hash/kept-1.jar")
         Files.createDirectories(selected.parent)
         Files.copy(repository.resolve("test/kept/1/kept-1.jar"), selected)
+        Files.copy(keptPom, selected.resolveSibling("kept-1.pom"))
+        val selectedParent = moduleCache.resolve("test/parent/1/content-hash/parent-1.pom")
+        Files.createDirectories(selectedParent.parent)
+        Files.copy(parentPom, selectedParent)
         val otherProject = moduleCache.resolve("test/other/1/content-hash/other-1.jar")
         Files.createDirectories(otherProject.parent)
         Files.copy(repository.resolve("test/other/1/other-1.jar"), otherProject)
@@ -116,6 +149,7 @@ class DependencyBundlePluginTest {
 
         val bundleRepository = app.resolve("build/dependency-bundle/m2/repository")
         assertTrue(Files.isRegularFile(bundleRepository.resolve("test/kept/1/kept-1.jar")))
+        assertTrue(Files.isRegularFile(bundleRepository.resolve("test/parent/1/parent-1.pom")))
         assertFalse(Files.exists(bundleRepository.resolve("test/other")))
         assertFalse(Files.exists(bundleRepository.resolve("test/unrelated")))
         assertFalse(Files.exists(directory.resolve("build/dependency-bundle")))
