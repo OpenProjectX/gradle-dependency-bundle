@@ -244,7 +244,7 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
                     logger.warn("Ignoring a conflicting cached copy of {}", destination)
                 }
                 if (source.fileName.toString().endsWith(".pom")) {
-                    metadataDependencies += referencedPomCoordinates(source)
+                    metadataDependencies += referencedPomCoordinates(source, cache)
                 }
             }
         }
@@ -256,50 +256,31 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
      * are not necessarily Gradle resolution-result components. Preserve their
      * recursive metadata closure without copying unrelated cache coordinates.
      */
-    private fun referencedPomCoordinates(pom: Path): Set<ModuleCoordinate> {
+    private fun referencedPomCoordinates(pom: Path, cache: Path): Set<ModuleCoordinate> {
         return try {
-            val factory = DocumentBuilderFactory.newInstance()
-            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
-            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            factory.isXIncludeAware = false
-            factory.isExpandEntityReferences = false
-            val root = Files.newInputStream(pom).use { factory.newDocumentBuilder().parse(it).documentElement }
+            val root = parsePom(pom)
             val parent = root.directChild("parent")
-            val rawProperties = root.directChild("properties")
-                ?.directChildren()
-                ?.associate { it.elementName() to it.textContent.trim() }
+            val localProperties = root.localPomProperties()
+            val parentCoordinate = parent?.let { pomCoordinate(it, localProperties) }
+            val properties = parentCoordinate
+                ?.let { effectivePomProperties(cache, it, mutableSetOf()) }
                 .orEmpty()
                 .toMutableMap()
-
-            val parentGroup = parent?.directText("groupId")
-            val parentVersion = parent?.directText("version")
-            val projectGroup = root.directText("groupId") ?: parentGroup
-            val projectVersion = root.directText("version") ?: parentVersion
-            projectGroup?.let {
-                rawProperties.putIfAbsent("project.groupId", it)
-                rawProperties.putIfAbsent("pom.groupId", it)
-            }
-            projectVersion?.let {
-                rawProperties.putIfAbsent("project.version", it)
-                rawProperties.putIfAbsent("pom.version", it)
-            }
+                .apply { putAll(localProperties) }
+            addPomAliases(root, parent, properties)
 
             fun coordinate(element: Element): ModuleCoordinate? {
-                val group = resolvePomValue(element.directText("groupId"), rawProperties) ?: return null
-                val module = resolvePomValue(element.directText("artifactId"), rawProperties) ?: return null
-                val version = resolvePomValue(element.directText("version"), rawProperties) ?: return null
-                return ModuleCoordinate(group, module, version)
+                return pomCoordinate(element, properties)
             }
 
             buildSet {
-                parent?.let { coordinate(it)?.let(::add) }
+                parentCoordinate?.let(::add)
                 root.directChild("dependencyManagement")
                     ?.directChild("dependencies")
                     ?.directChildren("dependency")
                     ?.filter {
-                        resolvePomValue(it.directText("type"), rawProperties) == "pom" &&
-                            resolvePomValue(it.directText("scope"), rawProperties) == "import"
+                        resolvePomValue(it.directText("type"), properties) == "pom" &&
+                            resolvePomValue(it.directText("scope"), properties) == "import"
                     }
                     ?.forEach { coordinate(it)?.let(::add) }
             }
@@ -307,6 +288,89 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
             logger.info("Cannot inspect Maven metadata references in {}: {}", pom, exception.message)
             emptySet()
         }
+    }
+
+    private fun effectivePomProperties(
+        cache: Path,
+        coordinate: ModuleCoordinate,
+        visiting: MutableSet<ModuleCoordinate>,
+    ): Map<String, String> {
+        if (!visiting.add(coordinate)) return emptyMap()
+        return try {
+            val pom = findCachedPom(cache, coordinate) ?: return emptyMap()
+            val root = parsePom(pom)
+            val parent = root.directChild("parent")
+            val localProperties = root.localPomProperties()
+            val parentCoordinate = parent?.let { pomCoordinate(it, localProperties) }
+            val properties = parentCoordinate
+                ?.let { effectivePomProperties(cache, it, visiting) }
+                .orEmpty()
+                .toMutableMap()
+                .apply { putAll(localProperties) }
+            addPomAliases(root, parent, properties)
+            properties
+        } catch (exception: Exception) {
+            logger.info("Cannot evaluate inherited Maven properties for {}: {}", coordinate, exception.message)
+            emptyMap()
+        } finally {
+            visiting.remove(coordinate)
+        }
+    }
+
+    private fun findCachedPom(cache: Path, coordinate: ModuleCoordinate): Path? {
+        val directory = cache.resolve(coordinate.group).resolve(coordinate.module).resolve(coordinate.version)
+        if (!Files.isDirectory(directory)) return null
+        return Files.walk(directory).use { files ->
+            files.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".pom") }
+                .findFirst()
+                .orElse(null)
+        }
+    }
+
+    private fun parsePom(pom: Path): Element {
+        val factory = DocumentBuilderFactory.newInstance()
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        factory.isXIncludeAware = false
+        factory.isExpandEntityReferences = false
+        return Files.newInputStream(pom).use { factory.newDocumentBuilder().parse(it).documentElement }
+    }
+
+    private fun Element.localPomProperties(): Map<String, String> =
+        directChild("properties")
+            ?.directChildren()
+            ?.associate { it.elementName() to it.textContent.trim() }
+            .orEmpty()
+
+    private fun pomCoordinate(element: Element, properties: Map<String, String>): ModuleCoordinate? {
+        val group = resolvePomValue(element.directText("groupId"), properties) ?: return null
+        val module = resolvePomValue(element.directText("artifactId"), properties) ?: return null
+        val version = resolvePomValue(element.directText("version"), properties) ?: return null
+        return ModuleCoordinate(group, module, version)
+    }
+
+    private fun addPomAliases(
+        root: Element,
+        parent: Element?,
+        properties: MutableMap<String, String>,
+    ) {
+        val parentGroup = resolvePomValue(parent?.directText("groupId"), properties)
+        val parentModule = resolvePomValue(parent?.directText("artifactId"), properties)
+        val parentVersion = resolvePomValue(parent?.directText("version"), properties)
+        val projectGroup = resolvePomValue(root.directText("groupId"), properties) ?: parentGroup
+        val projectVersion = resolvePomValue(root.directText("version"), properties) ?: parentVersion
+        projectGroup?.let {
+            properties["project.groupId"] = it
+            properties["pom.groupId"] = it
+        }
+        projectVersion?.let {
+            properties["project.version"] = it
+            properties["pom.version"] = it
+        }
+        parentGroup?.let { properties["project.parent.groupId"] = it }
+        parentModule?.let { properties["project.parent.artifactId"] = it }
+        parentVersion?.let { properties["project.parent.version"] = it }
     }
 
     private fun resolvePomValue(value: String?, properties: Map<String, String>): String? {
