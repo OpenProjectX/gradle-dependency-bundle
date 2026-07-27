@@ -9,6 +9,7 @@ import javax.inject.Inject
 abstract class DependencyBundleExtension @Inject constructor(objects: ObjectFactory) {
     val configurations: ListProperty<String> = objects.listProperty(String::class.java).convention(listOf("runtimeClasspath"))
     val includeBuildDependencies: Property<Boolean> = objects.property(Boolean::class.java).convention(true)
+    val includeUntrackedBuildDependencies: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
     val includeSources: Property<Boolean> = objects.property(Boolean::class.java).convention(true)
     val additionalModules: ListProperty<String> = objects.listProperty(String::class.java).convention(emptyList())
     val gradleVariantRequests: ListProperty<String> = objects.listProperty(String::class.java).convention(emptyList())

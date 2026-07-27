@@ -22,6 +22,10 @@ gradle.beforeProject { project ->
         project.extensions.getByName("dependencyBundle").with {
             outputDirectory.set(project.file(System.getProperty("bundleOutput")))
             includeBuildDependencies.set(true)
+            // This build uses a fresh, dedicated Gradle home. Include settings,
+            // buildSrc, and init-script artifacts whose graphs are not visible
+            // from the target Project API.
+            includeUntrackedBuildDependencies.set(true)
             includeSources.set(true)
             configurations.addAll("runtimeClasspath", "testRuntimeClasspath")
             // The independent example runs offline before its own graph is

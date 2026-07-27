@@ -41,6 +41,7 @@ import org.w3c.dom.Node
 abstract class ExportDependencyBundleTask : DefaultTask() {
     @get:Input abstract val configurationNames: ListProperty<String>
     @get:Input abstract val includeBuildDependencies: Property<Boolean>
+    @get:Input abstract val includeUntrackedBuildDependencies: Property<Boolean>
     @get:Input abstract val includeSources: Property<Boolean>
     @get:Input abstract val additionalModules: ListProperty<String>
     @get:Input abstract val gradleVariantRequests: ListProperty<String>
@@ -199,6 +200,10 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
     private fun copyGradleCache(repository: Path) {
         val cache = project.gradle.gradleUserHomeDir.toPath().resolve("caches/modules-2/files-2.1")
         if (!Files.isDirectory(cache)) throw GradleException("Gradle module cache not found: $cache")
+        if (includeUntrackedBuildDependencies.get()) {
+            copyCompleteGradleCache(cache, repository)
+            return
+        }
         val pending = ArrayDeque(
             components.values
                 .asSequence()
@@ -214,6 +219,26 @@ abstract class ExportDependencyBundleTask : DefaultTask() {
             if (!copied.add(coordinate)) continue
             copyCoordinateCache(cache, repository, coordinate).forEach { dependency ->
                 if (dependency !in copied) pending.addLast(dependency)
+            }
+        }
+    }
+
+    private fun copyCompleteGradleCache(cache: Path, repository: Path) {
+        Files.walk(cache).use { paths ->
+            paths.filter(Files::isRegularFile).forEach { source ->
+                val relative = cache.relativize(source)
+                if (relative.nameCount < 5) return@forEach
+                val destination = repository
+                    .resolve(relative.getName(0).toString().replace('.', '/'))
+                    .resolve(relative.getName(1).toString())
+                    .resolve(relative.getName(2).toString())
+                    .resolve(source.fileName.toString())
+                Files.createDirectories(destination.parent)
+                if (!Files.exists(destination)) {
+                    Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES)
+                } else if (Files.mismatch(source, destination) != -1L) {
+                    logger.warn("Ignoring a conflicting cached copy of {}", destination)
+                }
             }
         }
     }

@@ -13,6 +13,7 @@ class DependencyBundlePlugin : Plugin<Project> {
             task.description = "Captures dependency graphs and exports a complete Maven-layout repository."
             task.configurationNames.set(extension.configurations)
             task.includeBuildDependencies.set(extension.includeBuildDependencies)
+            task.includeUntrackedBuildDependencies.set(extension.includeUntrackedBuildDependencies)
             task.includeSources.set(extension.includeSources)
             task.additionalModules.set(extension.additionalModules)
             task.gradleVariantRequests.set(extension.gradleVariantRequests)
